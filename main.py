@@ -27,6 +27,10 @@ class MeTVClone(QMainWindow):
         self.fs_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self.fs_shortcut.activated.connect(self.play_external_fullscreen)
 
+        # Initialize QProcess for dvbv5-zap and mpv
+        self.zap_process = None
+        self.mpv_process = None
+
     def init_ui(self):
         # Tema scuro e stili (NON TOCCATI)
         self.setStyleSheet("""
@@ -162,8 +166,20 @@ class MeTVClone(QMainWindow):
         self._deduplicate_channels_file(self.conf_file) # Deduplicate the file on disk
         self.load_channels_from_conf()
 
-    def stop_all(self):
-        os.system("killall -9 dvbv5-zap mpv 2>/dev/null")
+
+
+    def stop_player_processes(self):
+        if self.zap_process and self.zap_process.state() == QProcess.ProcessState.Running:
+            self.zap_process.terminate()
+            self.zap_process.waitForFinished(1000) # Wait up to 1 second
+            if self.zap_process.state() == QProcess.ProcessState.Running:
+                self.zap_process.kill()
+        
+        if self.mpv_process and self.mpv_process.state() == QProcess.ProcessState.Running:
+            self.mpv_process.terminate()
+            self.mpv_process.waitForFinished(1000) # Wait up to 1 second
+            if self.mpv_process.state() == QProcess.ProcessState.Running:
+                self.mpv_process.kill()
 
     def play_channel(self):
         item = self.list_widget.currentItem()
@@ -171,14 +187,38 @@ class MeTVClone(QMainWindow):
         
         channel_name = item.text()
         wid = int(self.video_frame.winId())
-        self.stop_all()
+        self.stop_player_processes() # Use the new graceful stop method
+
+        self.status_label.setText(f"Sintonizzato su: {channel_name}...")
+
+        # Initialize new QProcess instances
+        self.zap_process = QProcess(self)
+        self.mpv_process = QProcess(self)
+
+        # Set up dvbv5-zap
+        zap_args = ["-c", self.conf_file, "-r", "-p", "-o", "-", channel_name]
+        self.zap_process.setProgram("dvbv5-zap")
+        self.zap_process.setArguments(zap_args)
         
-        zap_cmd = f'dvbv5-zap -c {self.conf_file} -r -p -o - "{channel_name}"'
-        player_cmd = f'mpv --wid={wid} --vo=x11 --cache=yes --no-video-aspect-override fd://0'
-        
-        full_command = f"{zap_cmd} | {player_cmd} &"
+        # Set up mpv
+        mpv_args = [f"--wid={wid}", "--vo=x11", "--cache=yes", "--no-video-aspect-override", "fd://0"]
+        self.mpv_process.setProgram("mpv")
+        self.mpv_process.setArguments(mpv_args)
+
+        # Pipe dvbv5-zap output to mpv input
+        self.zap_process.setStandardOutputProcess(self.mpv_process)
+
+        # Connect signals for error reporting and finishing
+        self.zap_process.readyReadStandardError.connect(self._handle_zap_stderr)
+        self.mpv_process.readyReadStandardError.connect(self._handle_mpv_stderr)
+        self.zap_process.finished.connect(self._on_zap_finished)
+        self.mpv_process.finished.connect(self._on_mpv_finished)
+
+        # Start mpv first, then zap to ensure pipe is ready
+        self.mpv_process.start()
+        self.zap_process.start()
+
         self.status_label.setText(f"Sintonizzato su: {channel_name}")
-        os.system(full_command)
 
     def play_external_fullscreen(self):
         """Lancia lo stream in una finestra MPV esterna separata con fullscreen attivo"""
@@ -186,18 +226,42 @@ class MeTVClone(QMainWindow):
         if not item: return
         
         channel_name = item.text()
-        self.stop_all()
+        self.stop_player_processes() # Use the new graceful stop method
         
+        self.status_label.setText(f"Fullscreen esterno: {channel_name}...")
+
+        # Initialize new QProcess instances
+        self.zap_process = QProcess(self)
+        self.mpv_process = QProcess(self)
+
+        # Set up dvbv5-zap
+        zap_args = ["-c", self.conf_file, "-r", "-p", "-o", "-", channel_name]
+        self.zap_process.setProgram("dvbv5-zap")
+        self.zap_process.setArguments(zap_args)
+        
+        # Set up mpv
         # Lancio esterno: rimosso --wid, aggiunto --fs (fullscreen)
-        zap_cmd = f'dvbv5-zap -c {self.conf_file} -r -p -o - "{channel_name}"'
-        player_cmd = f'mpv --fs --vo=gpu --cache=yes fd://0'
-        
-        full_command = f"{zap_cmd} | {player_cmd} &"
+        mpv_args = ["--fs", "--vo=gpu", "--cache=yes", "fd://0"]
+        self.mpv_process.setProgram("mpv")
+        self.mpv_process.setArguments(mpv_args)
+
+        # Pipe dvbv5-zap output to mpv input
+        self.zap_process.setStandardOutputProcess(self.mpv_process)
+
+        # Connect signals for error reporting and finishing
+        self.zap_process.readyReadStandardError.connect(self._handle_zap_stderr)
+        self.mpv_process.readyReadStandardError.connect(self._handle_mpv_stderr)
+        self.zap_process.finished.connect(self._on_zap_finished)
+        self.mpv_process.finished.connect(self._on_mpv_finished)
+
+        # Start mpv first, then zap to ensure pipe is ready
+        self.mpv_process.start()
+        self.zap_process.start()
+
         self.status_label.setText(f"Fullscreen esterno: {channel_name}")
-        os.system(full_command)
 
     def closeEvent(self, event):
-        self.stop_all()
+        self.stop_player_processes()
         event.accept()
 
     def _deduplicate_channels_file(self, conf_file_path):
@@ -234,6 +298,32 @@ class MeTVClone(QMainWindow):
         # Write the deduplicated content back to the file
         with open(conf_file_path, 'w', encoding='utf-8') as f:
             f.writelines(lines_to_write)
+
+        # Write the deduplicated content back to the file
+        with open(conf_file_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines_to_write)
+
+    def _handle_zap_stderr(self):
+        data = self.zap_process.readAllStandardError().data().decode().strip()
+        if data:
+            print(f"dvbv5-zap stderr: {data}")
+            # You might want to update a status bar or log this more formally
+            # self.status_label.setText(f"dvbv5-zap warning: {data}")
+
+    def _handle_mpv_stderr(self):
+        data = self.mpv_process.readAllStandardError().data().decode().strip()
+        if data:
+            print(f"mpv stderr: {data}")
+            # You might want to update a status bar or log this more formally
+            # self.status_label.setText(f"mpv warning: {data}")
+
+    def _on_zap_finished(self, exitCode, exitStatus):
+        print(f"dvbv5-zap finished with code {exitCode}, status {exitStatus}")
+        # Optionally, update status_label or handle errors
+
+    def _on_mpv_finished(self, exitCode, exitStatus):
+        print(f"mpv finished with code {exitCode}, status {exitStatus}")
+        # Optionally, update status_label or handle errors
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
