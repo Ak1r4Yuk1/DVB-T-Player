@@ -37,8 +37,8 @@ Prima di iniziare, assicurati di avere installati i seguenti componenti sul tuo 
 ### Installazione
 1.  **Clona il repository (se applicabile)**:
     ```bash
-    git clone https://github.com/tuo_utente/dvb-t-player.git # Sostituisci con il tuo repository
-    cd dvb-t-player
+    git clone https://github.com/Ak1r4Yuk1/DVB-T-Player
+    cd DVB-T-Player
     ```
     Se hai già i file localmente, naviga semplicemente nella directory del progetto.
 
